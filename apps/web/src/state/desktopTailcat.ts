@@ -92,7 +92,7 @@ export function createDesktopTailcatDiagnosticsAtomFamily(
 export const desktopTailcatDiagnosticsAtom =
   createDesktopTailcatDiagnosticsAtomFamily(getDesktopTailcatBridge);
 
-export function refreshDesktopTailcatDiagnostics(connectionId: string): void {
+function refreshDesktopTailcatDiagnostics(connectionId: string): void {
   appAtomRegistry.refresh(desktopTailcatDiagnosticsAtom(connectionId));
 }
 

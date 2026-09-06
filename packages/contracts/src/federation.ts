@@ -26,7 +26,7 @@ import { PortSchema } from "./baseSchemas.ts";
 export const FEDERATION_PROTOCOL_VERSION = 1 as const;
 
 /** Versioned `t3c://peer/<payload>` peer code. */
-export const FEDERATION_PEER_CODE_VERSION = 1 as const;
+const FEDERATION_PEER_CODE_VERSION = 1 as const;
 
 export const FederationScope = Schema.Literals([
   "environment.read",

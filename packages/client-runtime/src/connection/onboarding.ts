@@ -141,7 +141,7 @@ export const preparePairingRegistration = Effect.fn(
   });
 });
 
-export const registerPairingConnection = Effect.fn(
+const registerPairingConnection = Effect.fn(
   "clientRuntime.connection.onboarding.registerPairingConnection",
 )(function* (input: PairingConnectionInput) {
   const registration = yield* preparePairingRegistration(input);
@@ -153,7 +153,7 @@ export const registerPairingConnection = Effect.fn(
 const isBearerCredential = Schema.is(BearerConnectionCredential);
 const isBearerProfile = Schema.is(BearerConnectionProfile);
 
-export const updateBearerConnection = Effect.fn(
+const updateBearerConnection = Effect.fn(
   "clientRuntime.connection.onboarding.updateBearerConnection",
 )(function* (input: BearerConnectionUpdateInput) {
   const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
@@ -256,7 +256,7 @@ export const prepareSshRegistration = Effect.fn(
   });
 });
 
-export const registerSshConnection = Effect.fn(
+const registerSshConnection = Effect.fn(
   "clientRuntime.connection.onboarding.registerSshConnection",
 )(function* (input: SshConnectionInput) {
   const registration = yield* prepareSshRegistration(input);
@@ -267,7 +267,7 @@ export const registerSshConnection = Effect.fn(
 
 const isT3ConnectionCodeInvalidError = Schema.is(T3ConnectionCodeInvalidError);
 
-export const parseTailcatConnectionCode = Effect.fn(
+const parseTailcatConnectionCode = Effect.fn(
   "clientRuntime.connection.onboarding.parseTailcatConnectionCode",
 )(function* (code: string): Effect.fn.Return<TailcatConnectionCodePayload, ConnectionBlockedError> {
   return yield* Effect.try({
@@ -327,7 +327,7 @@ export const prepareTailcatRegistration = Effect.fn(
   });
 });
 
-export const registerTailcatConnection = Effect.fn(
+const registerTailcatConnection = Effect.fn(
   "clientRuntime.connection.onboarding.registerTailcatConnection",
 )(function* (input: TailcatConnectionInput) {
   const registration = yield* prepareTailcatRegistration(input);
@@ -336,6 +336,7 @@ export const registerTailcatConnection = Effect.fn(
   return registration.target.environmentId;
 });
 
+/** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
   const presentation = yield* ClientCapabilities.ClientPresentation;

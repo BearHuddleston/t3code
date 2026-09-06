@@ -306,7 +306,6 @@ it.layer(NodeServices.layer)("TailcatRemoteAccess", (it) => {
         (candidate) => candidate.id === result.pairingLinkId,
       );
       expect(link?.subject).toBe(TAILCAT_CONNECTION_CODE_PAIRING_SUBJECT);
-      expect(link?.credential).toBe(payload.pairingToken);
 
       yield* TestClock.adjust(RELOCK_DEBOUNCE);
       const open = yield* Queue.take(fake.serves);
@@ -315,6 +314,13 @@ it.layer(NodeServices.layer)("TailcatRemoteAccess", (it) => {
       expect(open.options.allow).toEqual({ _tag: "all" });
       expect(yield* locked.isRunning).toBe(false);
       expect(state.address).toBe(SERVER_ADDRESS);
+
+      // Pairing lists no longer carry credentials, so redeem the code's token to
+      // prove it is the credential of the link the service reported.
+      if (payload.pairingToken === undefined) throw new Error("Expected a pairing token");
+      const grant = yield* pairingLinks.consume(payload.pairingToken);
+      expect(grant.id).toBe(result.pairingLinkId);
+      expect(grant.subject).toBe(TAILCAT_CONNECTION_CODE_PAIRING_SUBJECT);
     }).pipe(Effect.provide(makeTestLayer())),
   );
 

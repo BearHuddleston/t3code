@@ -9,7 +9,7 @@ import * as Schema from "effect/Schema";
  * than guessing. Codes are copyable text and QR content, so they are kept
  * URL-safe and free of characters that break on paste.
  */
-export const T3_CONNECTION_CODE_SCHEME = "t3c:";
+const T3_CONNECTION_CODE_SCHEME = "t3c:";
 
 export const T3ConnectionCodeKind = Schema.Literals(["tailcat", "peer"]);
 export type T3ConnectionCodeKind = typeof T3ConnectionCodeKind.Type;

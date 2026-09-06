@@ -18,7 +18,7 @@ import {
  */
 
 /** Versioned `t3c://tailcat/<payload>` connection code. */
-export const TAILCAT_CONNECTION_CODE_VERSION = 1 as const;
+const TAILCAT_CONNECTION_CODE_VERSION = 1 as const;
 
 /**
  * Pairing links minted for Tailcat connection codes carry this subject. The

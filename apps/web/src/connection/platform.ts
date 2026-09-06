@@ -299,7 +299,7 @@ const ensureDesktopTailcatEnvironment = Effect.fn("web.connectionPlatform.tailca
  * bearer session while presenting this device's Tailcat key so the remote
  * server keeps admitting it after the pairing window closes.
  */
-export const provisionDesktopTailcatEnvironment = Effect.fn(
+const provisionDesktopTailcatEnvironment = Effect.fn(
   "web.connectionPlatform.tailcat.provisionDesktop",
 )(
   function* (input: {
@@ -358,6 +358,9 @@ const capabilitiesLayer = Layer.effectContext(
       scopes: AuthStandardClientScopes,
     });
     const cloudSession = CloudSession.of({
+      identity: Effect.sync(() =>
+        Option.fromNullishOr(appAtomRegistry.get(managedRelaySessionAtom)),
+      ),
       clerkToken: Effect.gen(function* () {
         const session = appAtomRegistry.get(managedRelaySessionAtom);
         if (session === null) {

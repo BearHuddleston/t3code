@@ -9,6 +9,7 @@ import {
   decodeTailcatConnectionCode,
 } from "@t3tools/shared/t3ConnectionCode";
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -302,7 +303,21 @@ export const prepareTailcatRegistration = Effect.fn(
   }
   const connectionId = `tailcat:${payload.environmentId}`;
   const gateway = yield* ClientCapabilities.TailcatEnvironmentGateway;
-  const provisioned = yield* gateway.provision({ payload, connectionId });
+  const crypto = yield* Crypto.Crypto;
+  // Pairing owns a temporary forward. The registry starts or reuses the saved
+  // connection separately, so rollback cannot disconnect an existing environment
+  // or a concurrent attempt that has already registered it.
+  const pairingConnectionId = `tailcat-pairing:${yield* crypto.randomUUIDv4.pipe(Effect.orDie)}`;
+  const provisioned = yield* gateway.provision({ payload, connectionId: pairingConnectionId }).pipe(
+    Effect.ensuring(
+      gateway.disconnect(pairingConnectionId).pipe(
+        Effect.ignoreCause({
+          log: "Warn",
+          message: "Could not stop the Tailcat pairing forward.",
+        }),
+      ),
+    ),
+  );
   if (payload.environmentId !== provisioned.environmentId) {
     return yield* new ConnectionBlockedError({
       reason: "configuration",
@@ -343,6 +358,7 @@ export const make = Effect.gen(function* () {
   const httpClient = yield* HttpClient.HttpClient;
   const ssh = yield* ClientCapabilities.SshEnvironmentGateway;
   const tailcat = yield* ClientCapabilities.TailcatEnvironmentGateway;
+  const crypto = yield* Crypto.Crypto;
   const credentials = yield* ConnectionCredentialStore.ConnectionCredentialStore;
 
   return ConnectionOnboarding.of({
@@ -366,6 +382,7 @@ export const make = Effect.gen(function* () {
       registerTailcatConnection(input).pipe(
         Effect.provideService(EnvironmentRegistry.EnvironmentRegistry, registry),
         Effect.provideService(ClientCapabilities.TailcatEnvironmentGateway, tailcat),
+        Effect.provideService(Crypto.Crypto, crypto),
       ),
   });
 });

@@ -77,9 +77,9 @@ export class TailcatEnvironmentGateway extends Context.Service<
   TailcatEnvironmentGateway,
   {
     /**
-     * Establishes the forward for a pasted code and pairs with T3 auth. The
-     * connection id is minted by onboarding so the forwarder and the saved
-     * profile always agree on it.
+     * Establishes a temporary forward for a pasted code and pairs with T3 auth.
+     * Onboarding owns this unique connection id and disconnects it after pairing;
+     * saved environments use their canonical connection id through `prepare`.
      */
     readonly provision: (input: {
       readonly payload: TailcatConnectionCodePayload;

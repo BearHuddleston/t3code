@@ -9,6 +9,8 @@ import {
   AuthStandardClientScopes,
   AuthEnvironmentBootstrapTokenType,
   AuthTokenExchangeGrantType,
+  TAILCAT_CONNECTION_CODE_PAIRING_SUBJECT,
+  TailcatRemoteAccessError,
   CommandId,
   DEFAULT_SERVER_SETTINGS,
   type DpopFailureReason,
@@ -58,6 +60,7 @@ import { assert, it } from "@effect/vitest";
 import { assertFailure, assertInclude, assertTrue } from "@effect/vitest/utils";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
+import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -1196,8 +1199,8 @@ const buildAppUnderTest = (options?: {
       Layer.provide(layerConfig),
     );
 
-    yield* Layer.build(appLayer);
-    return config;
+    const context = yield* Layer.build(appLayer);
+    return { ...config, auth: Context.get(context, EnvironmentAuth.EnvironmentAuth) };
   });
 
 const parseSessionCookieFromWsUrl = (
@@ -1320,6 +1323,7 @@ const exchangeAccessToken = (
   options?: {
     readonly headers?: Record<string, string>;
     readonly scope?: string;
+    readonly tailcatNodeKey?: string;
     readonly clientMetadata?: {
       readonly label?: string;
       readonly deviceType?: string;
@@ -1348,6 +1352,7 @@ const exchangeAccessToken = (
           ? { client_device_type: options.clientMetadata.deviceType }
           : {}),
         ...(options?.clientMetadata?.os ? { client_os: options.clientMetadata.os } : {}),
+        ...(options?.tailcatNodeKey ? { client_tailcat_node_key: options.tailcatNodeKey } : {}),
       }).toString(),
     });
     const body = yield* responseJsonEffect<{
@@ -2364,6 +2369,57 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         const state = (yield* response.json) as { readonly authenticated: boolean };
         assert.equal(state.authenticated, false);
       }
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("rejects Tailcat pairing and revokes its session when peer persistence fails", () =>
+    Effect.gen(function* () {
+      const persistenceFails = yield* Ref.make(true);
+      const { auth } = yield* buildAppUnderTest({
+        layers: {
+          tailcatRemoteAccess: {
+            recordTrustedPeer: () =>
+              Ref.get(persistenceFails).pipe(
+                Effect.flatMap((fails) =>
+                  fails
+                    ? new TailcatRemoteAccessError({
+                        code: "unknown",
+                        message: "Could not persist peer trust",
+                      })
+                    : Effect.void,
+                ),
+              ),
+          },
+        },
+      });
+      const grant = yield* auth.createPairingLink({
+        subject: TAILCAT_CONNECTION_CODE_PAIRING_SUBJECT,
+        scopes: AuthStandardClientScopes,
+      });
+      const options = {
+        scope: AuthStandardClientScopes.join(" "),
+        tailcatNodeKey: "nodekey:9ab555a4a588b75d2054adb683db82461bb6c707d43e8ba39439f8eb1e821503",
+      };
+
+      const failed = yield* exchangeAccessToken(grant.credential, options);
+      assert.equal(failed.response.status, 500);
+      assert.equal(failed.body.reason, "access_token_issuance_failed");
+      assert.isUndefined(failed.body.access_token);
+      assert.deepEqual(yield* auth.listSessions(), []);
+      const reused = yield* exchangeAccessToken(grant.credential, options);
+      assert.equal(reused.response.status, 401);
+
+      yield* Ref.set(persistenceFails, false);
+      const replacement = yield* auth.createPairingLink({
+        subject: TAILCAT_CONNECTION_CODE_PAIRING_SUBJECT,
+        scopes: AuthStandardClientScopes,
+      });
+      const paired = yield* exchangeAccessToken(replacement.credential, options);
+      assert.equal(paired.response.status, 200);
+      assert.equal(typeof paired.body.access_token, "string");
+      const sessions = yield* auth.listSessions();
+      assert.equal(sessions.length, 1);
+      assert.equal(sessions[0]?.subject, TAILCAT_CONNECTION_CODE_PAIRING_SUBJECT);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

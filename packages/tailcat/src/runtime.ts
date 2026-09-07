@@ -494,60 +494,93 @@ export const make = Effect.fn("TailcatRuntime.make")(function* (
       return raw.trim() as TailcatAddress;
     });
 
-  const generateServerIdentity: TailcatRuntime["Service"]["generateServerIdentity"] = Effect.fn(
-    "TailcatRuntime.generateServerIdentity",
-  )(function* ({ keyPath }) {
-    const runtime = yield* resolve;
-    yield* fileSystem.makeDirectory(path.dirname(keyPath), { recursive: true }).pipe(Effect.ignore);
-    // A fixed region bakes the DERP bootstrap region into the address, so the
-    // address stays stable across restarts instead of changing with whichever
-    // relay happens to be nearest at each start.
-    const result = yield* runCommand({
-      executablePath: runtime.executablePath,
-      args: ["genkey", `--key=${keyPath}`, "--fixed-region", "--force"],
+  const identityFileError = (cause: unknown) =>
+    new TailcatCommandError({
       subcommand: "genkey",
-      timeout: TAILCAT_SERVE_READY_TIMEOUT,
+      exitCode: null,
+      detail: "Could not create or secure the Tailcat identity file.",
+      cause,
     });
-    const lines = result.stdout
-      .split(/\r?\n/u)
-      .map((line) => line.trim())
-      .filter(Boolean);
-    const address = lines.find((line) => line.startsWith("tc"));
-    if (result.exitCode !== 0 || address === undefined) {
-      return yield* new TailcatCommandError({
-        subcommand: "genkey",
-        exitCode: result.exitCode,
-        detail: `Could not create a Tailcat identity: ${redactTailcatOutputLine(result.stderr.trim()) || "tailcat genkey failed"}.`,
-      });
-    }
-    yield* fileSystem.chmod(keyPath, 0o600).pipe(Effect.ignore);
-    return { address: yield* requireAddress(address) };
-  });
 
-  const generateClientIdentity: TailcatRuntime["Service"]["generateClientIdentity"] = Effect.fn(
-    "TailcatRuntime.generateClientIdentity",
-  )(function* ({ keyPath }) {
-    const runtime = yield* resolve;
-    yield* fileSystem.makeDirectory(path.dirname(keyPath), { recursive: true }).pipe(Effect.ignore);
-    const result = yield* runCommand({
-      executablePath: runtime.executablePath,
-      args: ["genkey", "--client", `--key=${keyPath}`, "--force"],
-      subcommand: "genkey",
-    });
-    const nodeKey = result.stdout
-      .split(/\r?\n/u)
-      .map((line) => line.trim())
-      .find(isTailcatNodeKey);
-    if (result.exitCode !== 0 || nodeKey === undefined) {
-      return yield* new TailcatCommandError({
-        subcommand: "genkey",
-        exitCode: result.exitCode,
-        detail: `Could not create a Tailcat client identity: ${redactTailcatOutputLine(result.stderr.trim()) || "tailcat genkey failed"}.`,
-      });
-    }
-    yield* fileSystem.chmod(keyPath, 0o600).pipe(Effect.ignore);
-    return { nodeKey };
-  });
+  const generateIdentity = Effect.fn("TailcatRuntime.generateIdentity")(function* <A>(
+    keyPath: string,
+    generate: (temporaryPath: string) => Effect.Effect<A, TailcatIdentityError>,
+  ) {
+    const directory = path.dirname(keyPath);
+    yield* fileSystem
+      .makeDirectory(directory, { recursive: true })
+      .pipe(Effect.mapError(identityFileError));
+    // Stage beside the destination so failures leave any existing identity intact,
+    // and an unverified key cannot be reused by a later existence check.
+    const temporaryDirectory = yield* fileSystem
+      .makeTempDirectoryScoped({ directory, prefix: ".tailcat-identity-" })
+      .pipe(Effect.mapError(identityFileError));
+    const temporaryPath = path.join(temporaryDirectory, "identity.key");
+    const identity = yield* generate(temporaryPath);
+    // On Windows chmod only controls writability; access still follows the directory's ACL.
+    yield* fileSystem.chmod(temporaryPath, 0o600).pipe(Effect.mapError(identityFileError));
+    yield* fileSystem.rename(temporaryPath, keyPath).pipe(Effect.mapError(identityFileError));
+    return identity;
+  }, Effect.scoped);
+
+  const generateServerIdentity: TailcatRuntime["Service"]["generateServerIdentity"] = ({
+    keyPath,
+  }) =>
+    generateIdentity(
+      keyPath,
+      Effect.fn("TailcatRuntime.generateServerIdentity")(function* (temporaryPath) {
+        const runtime = yield* resolve;
+        // A fixed region bakes the DERP bootstrap region into the address, so the
+        // address stays stable across restarts instead of changing with whichever
+        // relay happens to be nearest at each start.
+        const result = yield* runCommand({
+          executablePath: runtime.executablePath,
+          args: ["genkey", `--key=${temporaryPath}`, "--fixed-region", "--force"],
+          subcommand: "genkey",
+          timeout: TAILCAT_SERVE_READY_TIMEOUT,
+        });
+        const lines = result.stdout
+          .split(/\r?\n/u)
+          .map((line) => line.trim())
+          .filter(Boolean);
+        const address = lines.find((line) => line.startsWith("tc"));
+        if (result.exitCode !== 0 || address === undefined) {
+          return yield* new TailcatCommandError({
+            subcommand: "genkey",
+            exitCode: result.exitCode,
+            detail: `Could not create a Tailcat identity: ${redactTailcatOutputLine(result.stderr.trim()) || "tailcat genkey failed"}.`,
+          });
+        }
+        return { address: yield* requireAddress(address) };
+      }),
+    );
+
+  const generateClientIdentity: TailcatRuntime["Service"]["generateClientIdentity"] = ({
+    keyPath,
+  }) =>
+    generateIdentity(
+      keyPath,
+      Effect.fn("TailcatRuntime.generateClientIdentity")(function* (temporaryPath) {
+        const runtime = yield* resolve;
+        const result = yield* runCommand({
+          executablePath: runtime.executablePath,
+          args: ["genkey", "--client", `--key=${temporaryPath}`, "--force"],
+          subcommand: "genkey",
+        });
+        const nodeKey = result.stdout
+          .split(/\r?\n/u)
+          .map((line) => line.trim())
+          .find(isTailcatNodeKey);
+        if (result.exitCode !== 0 || nodeKey === undefined) {
+          return yield* new TailcatCommandError({
+            subcommand: "genkey",
+            exitCode: result.exitCode,
+            detail: `Could not create a Tailcat client identity: ${redactTailcatOutputLine(result.stderr.trim()) || "tailcat genkey failed"}.`,
+          });
+        }
+        return { nodeKey };
+      }),
+    );
 
   const readClientPublicKey: TailcatRuntime["Service"]["readClientPublicKey"] = Effect.fn(
     "TailcatRuntime.readClientPublicKey",

@@ -153,8 +153,12 @@ const serverEnvironmentLayer = Layer.mock(ServerEnvironment.ServerEnvironment)({
   getDescriptor: Effect.succeed(DESCRIPTOR),
 });
 
-const makeTestLayer = () =>
+const makeTestLayer = (beforeStateWrite = Effect.void) =>
   TailcatRemoteAccess.layer.pipe(
+    Layer.updateService(FileSystem.FileSystem, (fileSystem) => ({
+      ...fileSystem,
+      rename: (from, to) => beforeStateWrite.pipe(Effect.andThen(fileSystem.rename(from, to))),
+    })),
     Layer.provideMerge(fakeRuntimeLayer),
     Layer.provideMerge(authLayer),
     Layer.provide(serverEnvironmentLayer),
@@ -162,6 +166,20 @@ const makeTestLayer = () =>
       ServerConfig.layerTest(process.cwd(), { prefix: "t3-tailcat-remote-access-test-" }),
     ),
   );
+
+/** Pauses one persisted-state replacement after its snapshot has been derived. */
+const makeWriteBarrier = Effect.gen(function* () {
+  const armed = yield* Ref.make(false);
+  const started = yield* Deferred.make<void>();
+  const release = yield* Deferred.make<void>();
+  const beforeWrite = Effect.gen(function* () {
+    if (yield* Ref.getAndSet(armed, false)) {
+      yield* Deferred.succeed(started, undefined);
+      yield* Deferred.await(release);
+    }
+  });
+  return { armed, started, release, beforeWrite };
+});
 
 const PersistedStateJson = Schema.fromJsonString(
   Schema.Struct({
@@ -210,6 +228,70 @@ const startEnabled = Effect.gen(function* () {
 });
 
 it.layer(NodeServices.layer)("TailcatRemoteAccess", (it) => {
+  it.effect.each([
+    ["different devices", `nodekey:${"ab".repeat(32)}` as TailcatNodeKey],
+    ["the same device", PEER_NODE_KEY],
+  ] as const)("preserves concurrent pairings from %s", ([_label, secondNodeKey]) =>
+    Effect.gen(function* () {
+      const barrier = yield* makeWriteBarrier;
+      yield* Effect.gen(function* () {
+        const service = yield* TailcatRemoteAccess.TailcatRemoteAccess;
+        const firstSession = AuthSessionId.make("session-first");
+        const secondSession = AuthSessionId.make("session-second");
+        yield* Ref.set(barrier.armed, true);
+        const first = yield* service
+          .recordTrustedPeer({ nodeKey: PEER_NODE_KEY, label: undefined, sessionId: firstSession })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(barrier.started);
+        const second = yield* service
+          .recordTrustedPeer({ nodeKey: secondNodeKey, label: undefined, sessionId: secondSession })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.succeed(barrier.release, undefined);
+        yield* Fiber.join(first);
+        yield* Fiber.join(second);
+
+        const saved = yield* readPersistedState;
+        expect(saved.trustedPeers.map((peer) => peer.nodeKey)).toEqual([
+          ...new Set([PEER_NODE_KEY, secondNodeKey]),
+        ]);
+        expect(saved.trustedPeers.flatMap((peer) => peer.sessionIds)).toEqual([
+          firstSession,
+          secondSession,
+        ]);
+        expect((yield* service.state).trustedPeers).toEqual(saved.trustedPeers);
+      }).pipe(Effect.provide(makeTestLayer(barrier.beforeWrite)));
+    }),
+  );
+
+  it.effect("preserves disabling access while a peer is being recorded", () =>
+    Effect.gen(function* () {
+      const barrier = yield* makeWriteBarrier;
+      yield* Effect.gen(function* () {
+        const service = yield* TailcatRemoteAccess.TailcatRemoteAccess;
+        yield* service.setEnabled(true);
+        yield* Ref.set(barrier.armed, true);
+        const pairing = yield* service
+          .recordTrustedPeer({ nodeKey: PEER_NODE_KEY, label: undefined })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(barrier.started);
+        const disabling = yield* service
+          .setEnabled(false)
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.succeed(barrier.release, undefined);
+        yield* Fiber.join(pairing);
+        yield* Fiber.join(disabling);
+
+        const saved = yield* readPersistedState;
+        expect(saved.enabled).toBe(false);
+        expect(saved.trustedPeers.map((peer) => peer.nodeKey)).toEqual([PEER_NODE_KEY]);
+        expect(yield* service.state).toMatchObject({
+          enabled: false,
+          trustedPeers: saved.trustedPeers,
+        });
+      }).pipe(Effect.provide(makeTestLayer(barrier.beforeWrite)));
+    }),
+  );
+
   it.effect("stays disabled and spawns nothing while remote access is off", () =>
     Effect.gen(function* () {
       const service = yield* TailcatRemoteAccess.TailcatRemoteAccess;

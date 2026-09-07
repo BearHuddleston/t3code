@@ -35,6 +35,51 @@ const withStateDir = <A, E>(
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
 
 describe("FederationPeerStore pending peer codes", () => {
+  it.effect("rejects invalid expiration dates before writing pending codes", () =>
+    withStateDir(
+      Effect.gen(function* () {
+        const store = yield* FederationPeerStore.make;
+        const error = yield* store
+          .addPendingPeerCode({
+            linkId: "link-invalid",
+            scopes: ["runs.read"],
+            expiresAt: "not-a-date",
+          })
+          .pipe(Effect.flip);
+        assert.equal(error._tag, "FederationPeerStoreError");
+        assert.equal(error.operation, "write");
+        assert.deepEqual(yield* store.pendingPeerCodes, []);
+      }),
+    ),
+  );
+
+  it.effect("falls back safely when persisted pending codes contain an invalid date", () =>
+    withStateDir(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const config = yield* ServerConfig.ServerConfig;
+        yield* fs.writeFileString(
+          path.join(config.stateDir, FederationPeerStore.FEDERATION_STATE_FILE),
+          `{"version":1,"peers":[],"remoteRuns":[],"inboundRuns":[],"pendingPeerCodes":[{"linkId":"link-invalid","scopes":["runs.read"],"expiresAt":"not-a-date"}]}`,
+        );
+
+        const store = yield* FederationPeerStore.make;
+        assert.deepEqual(yield* store.pendingPeerCodes, []);
+        yield* store.addPendingPeerCode({
+          linkId: "link-live",
+          scopes: ["runs.read"],
+          expiresAt: "2026-09-04T00:10:00.000Z",
+        });
+        yield* store.settlePendingPeerCodes({ nowMs: epochMs("2026-09-04T00:01:00.000Z") });
+        assert.deepEqual(
+          (yield* store.pendingPeerCodes).map((code) => code.linkId),
+          ["link-live"],
+        );
+      }),
+    ),
+  );
+
   it.effect("offered codes survive a restart and settle on redemption or expiry", () =>
     withStateDir(
       Effect.gen(function* () {

@@ -79,7 +79,11 @@ export type PersistedRemoteRun = typeof PersistedRemoteRun.Type;
 export const PersistedPendingPeerCode = Schema.Struct({
   linkId: Schema.String,
   scopes: Schema.Array(FederationScope),
-  expiresAt: Schema.String,
+  expiresAt: Schema.String.check(
+    Schema.makeFilter((value) => Option.isSome(DateTime.make(value)), {
+      message: "Expected a valid expiration date-time",
+    }),
+  ),
 });
 export type PersistedPendingPeerCode = typeof PersistedPendingPeerCode.Type;
 

@@ -14,6 +14,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
@@ -96,15 +97,20 @@ export const make = Effect.gen(function* () {
   const withPeerLock = <A, E>(peerId: EnvironmentId, effect: Effect.Effect<A, E>) =>
     lockFor(peerId).pipe(Effect.flatMap((lock) => lock.withPermits(1)(effect)));
   const nowMs = DateTime.now.pipe(Effect.map(DateTime.toEpochMillis));
+  const identityLock = yield* Semaphore.make(1);
+  const clientNodeKeyRef = yield* Ref.make<Option.Option<TailcatNodeKey>>(Option.none());
 
   const clientNodeKey: FederationTransport["Service"]["clientNodeKey"] = Effect.gen(function* () {
+    const cached = yield* Ref.get(clientNodeKeyRef);
+    if (Option.isSome(cached)) return cached.value;
     const exists = yield* fileSystem.exists(identityPath).pipe(Effect.orElseSucceed(() => false));
-    if (!exists) {
-      const created = yield* runtime.generateClientIdentity({ keyPath: identityPath });
-      return created.nodeKey;
-    }
-    return yield* runtime.readClientPublicKey({ keyPath: identityPath });
+    const nodeKey = exists
+      ? yield* runtime.readClientPublicKey({ keyPath: identityPath })
+      : (yield* runtime.generateClientIdentity({ keyPath: identityPath })).nodeKey;
+    yield* Ref.set(clientNodeKeyRef, Option.some(nodeKey));
+    return nodeKey;
   }).pipe(
+    identityLock.withPermits(1),
     Effect.mapError((error) =>
       transportUnavailable(`Tailcat is not available on this machine: ${error.message}`),
     ),

@@ -56,7 +56,7 @@ interface FakeProcess {
   readonly stderr?: Stream.Stream<Uint8Array>;
   readonly exitCode?: number;
   /** Runs once the process has been spawned, for tests that sequence on it. */
-  readonly onSpawn?: Effect.Effect<void>;
+  readonly onSpawn?: (args: ReadonlyArray<string>) => Effect.Effect<void>;
 }
 
 interface SpawnRecord {
@@ -124,7 +124,7 @@ function fakeTailcat(processes: Readonly<Record<string, FakeProcess>>): FakeTail
         Effect.flatMap(Deferred.isDone(exit), (done) => (done ? Effect.void : kill())),
       );
       if (fake.onSpawn !== undefined) {
-        yield* fake.onSpawn;
+        yield* fake.onSpawn(command.args);
       }
       return ChildProcessSpawner.makeHandle({
         pid: ChildProcessSpawner.ProcessId(4242),
@@ -153,6 +153,7 @@ interface FakeHost {
   readonly environment?: NodeJS.ProcessEnv;
   /** Whether something accepts connections on the forwarded loopback port. */
   readonly listening?: boolean;
+  readonly fileSystem?: Partial<FileSystem.FileSystem>;
 }
 
 const bundledOnly: TailcatExecutableResolution = {
@@ -196,6 +197,7 @@ function runtimeLayer(tailcat: FakeTailcat, host: FakeHost = {}) {
         ? Effect.fail(notFound("stat", path))
         : Effect.succeed(fileInfo(mode));
     },
+    ...host.fileSystem,
   });
   const net = Layer.succeed(NetService.NetService, {
     canListenOnHost: () => Effect.succeed(true),
@@ -367,6 +369,121 @@ describe("TailcatRuntime.resolve", () => {
   });
 });
 
+describe("TailcatRuntime identity generation", () => {
+  const permissionError = PlatformError.systemError({
+    _tag: "PermissionDenied",
+    module: "FileSystem",
+    method: "chmod",
+  });
+
+  const fixture = (kind: "server" | "client", failPermissions: boolean, existing = false) => {
+    const keyPath = kind === "server" ? SERVER_KEY : CLIENT_KEY;
+    const expected = kind === "server" ? ADDRESS : NODE_KEY;
+    const original = { contents: "existing identity", mode: 0o644 };
+    const files = new Map<string, { contents: string; mode: number }>(
+      existing ? [[keyPath, original]] : [],
+    );
+    const directories = new Set<string>();
+    const tailcat = fakeTailcat({
+      version: versionProcess(),
+      genkey: {
+        stdout: text(`${expected}\n`),
+        exitCode: 0,
+        onSpawn: (args) =>
+          Effect.sync(() => {
+            const destination = args.find((arg) => arg.startsWith("--key="))?.slice(6);
+            assert(destination !== undefined);
+            // An override may create a file with broad permissions; publication must tighten them.
+            files.set(destination, { contents: "generated identity", mode: 0o644 });
+          }),
+      },
+    });
+    const layer = runtimeLayer(tailcat, {
+      fileSystem: {
+        makeDirectory: () => Effect.void,
+        makeTempDirectoryScoped: (options) =>
+          Effect.acquireRelease(
+            Effect.sync(() => {
+              const directory = `${options?.directory}/${options?.prefix}temporary`;
+              directories.add(directory);
+              return directory;
+            }),
+            (directory) =>
+              Effect.sync(() => {
+                for (const file of files.keys()) {
+                  if (file.startsWith(`${directory}/`)) files.delete(file);
+                }
+                directories.delete(directory);
+              }),
+          ),
+        chmod: (filePath, mode) =>
+          failPermissions
+            ? Effect.fail(permissionError)
+            : Effect.sync(() => {
+                const file = files.get(filePath);
+                assert(file !== undefined);
+                files.set(filePath, { ...file, mode });
+              }),
+        rename: (source, destination) =>
+          Effect.sync(() => {
+            const file = files.get(source);
+            assert(file !== undefined);
+            files.set(destination, file);
+            files.delete(source);
+          }),
+      },
+    });
+    const generate = Effect.gen(function* () {
+      const runtime = yield* TailcatRuntime;
+      return kind === "server"
+        ? (yield* runtime.generateServerIdentity({ keyPath })).address
+        : (yield* runtime.generateClientIdentity({ keyPath })).nodeKey;
+    });
+    return { files, directories, keyPath, expected, original, layer, generate };
+  };
+
+  it.effect.each(["server", "client"] as const)(
+    "publishes a %s identity only after securing the generated file",
+    (kind) => {
+      const test = fixture(kind, false);
+      return Effect.gen(function* () {
+        expect(yield* test.generate).toBe(test.expected);
+        expect([...test.files]).toEqual([
+          [test.keyPath, { contents: "generated identity", mode: 0o600 }],
+        ]);
+        expect(test.directories.size).toBe(0);
+      }).pipe(Effect.provide(test.layer));
+    },
+  );
+
+  it.effect.each(["server", "client"] as const)(
+    "does not leave a reusable %s identity when chmod fails",
+    (kind) => {
+      const test = fixture(kind, true);
+      return Effect.gen(function* () {
+        const error = yield* test.generate.pipe(Effect.flip);
+        assert(error._tag === "TailcatCommandError");
+        expect(error.subcommand).toBe("genkey");
+        expect(error.cause).toBe(permissionError);
+        expect(test.files.size).toBe(0);
+        expect(test.directories.size).toBe(0);
+      }).pipe(Effect.provide(test.layer));
+    },
+  );
+
+  it.effect.each(["server", "client"] as const)(
+    "preserves an existing %s identity when securing its replacement fails",
+    (kind) => {
+      const test = fixture(kind, true, true);
+      return Effect.gen(function* () {
+        yield* test.generate.pipe(Effect.flip);
+        expect([...test.files]).toEqual([[test.keyPath, test.original]]);
+        expect(test.directories.size).toBe(0);
+      }).pipe(Effect.provide(test.layer));
+    },
+  );
+});
+
 describe("TailcatRuntime.serve", () => {
   const allow: TailcatAllowPolicy = { _tag: "keys", nodeKeys: [NODE_KEY] };
   const serveInput = { keyPath: SERVER_KEY, localPort: 3773, allow };
@@ -486,7 +603,7 @@ describe("TailcatRuntime.serve", () => {
       const spawned = yield* Deferred.make<void>();
       const tailcat = fakeTailcat({
         version: versionProcess(),
-        serve: { onSpawn: Deferred.succeed(spawned, undefined).pipe(Effect.asVoid) },
+        serve: { onSpawn: () => Deferred.succeed(spawned, undefined).pipe(Effect.asVoid) },
       });
       const error = yield* Effect.gen(function* () {
         const runtime = yield* TailcatRuntime;
@@ -595,7 +712,7 @@ describe("TailcatRuntime.forward", () => {
       const spawned = yield* Deferred.make<void>();
       const tailcat = fakeTailcat({
         version: versionProcess(),
-        forward: { onSpawn: Deferred.succeed(spawned, undefined).pipe(Effect.asVoid) },
+        forward: { onSpawn: () => Deferred.succeed(spawned, undefined).pipe(Effect.asVoid) },
       });
       const error = yield* Effect.gen(function* () {
         const runtime = yield* TailcatRuntime;

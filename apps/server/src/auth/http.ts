@@ -371,7 +371,13 @@ export const authHttpApiLayer = HttpApiBuilder.group(
                 })
                 .pipe(
                   Effect.catch((error) =>
-                    Effect.logWarning("Could not record the paired Tailcat peer.", { error }),
+                    serverAuth
+                      .revokeSession(exchange.sessionId)
+                      .pipe(
+                        Effect.andThen(
+                          failEnvironmentInternal("access_token_issuance_failed", error),
+                        ),
+                      ),
                   ),
                 );
             }

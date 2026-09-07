@@ -43,6 +43,7 @@ import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
@@ -223,6 +224,8 @@ export const make = Effect.gen(function* () {
   });
 
   const persisted = yield* Ref.make<PersistedTailcatRemoteAccess>(yield* readPersisted);
+  // Hold this across the read, derived update, and file write in every persisted-state mutator.
+  const persistedLock = yield* Semaphore.make(1);
   const runtimeState = yield* Ref.make<RuntimeState>(INITIAL_RUNTIME_STATE);
   const signals = yield* Queue.unbounded<"reconcile">();
   const expiryTimer = yield* Ref.make<Option.Option<Fiber.Fiber<void>>>(Option.none());
@@ -598,7 +601,7 @@ export const make = Effect.gen(function* () {
     }
     yield* signalReconcile;
     return yield* publish;
-  });
+  }, persistedLock.withPermits(1));
 
   const recordTrustedPeer: TailcatRemoteAccess["Service"]["recordTrustedPeer"] = Effect.fn(
     "TailcatRemoteAccess.recordTrustedPeer",
@@ -644,7 +647,7 @@ export const make = Effect.gen(function* () {
     });
     yield* signalReconcile;
     yield* publish;
-  });
+  }, persistedLock.withPermits(1));
 
   const revokeTrustedPeer: TailcatRemoteAccess["Service"]["revokeTrustedPeer"] = Effect.fn(
     "TailcatRemoteAccess.revokeTrustedPeer",
@@ -672,7 +675,7 @@ export const make = Effect.gen(function* () {
     });
     yield* signalReconcile;
     return yield* publish;
-  });
+  }, persistedLock.withPermits(1));
 
   const renameTrustedPeer: TailcatRemoteAccess["Service"]["renameTrustedPeer"] = Effect.fn(
     "TailcatRemoteAccess.renameTrustedPeer",
@@ -698,7 +701,7 @@ export const make = Effect.gen(function* () {
       ),
     });
     return yield* publish;
-  });
+  }, persistedLock.withPermits(1));
 
   const regenerateIdentity: TailcatRemoteAccess["Service"]["regenerateIdentity"] = Effect.gen(
     function* () {
@@ -743,6 +746,7 @@ export const make = Effect.gen(function* () {
       }
       yield* signalReconcile;
     },
+    persistedLock.withPermits(1),
   );
 
   return TailcatRemoteAccess.of({

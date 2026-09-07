@@ -233,11 +233,7 @@ export const callRunningServer = <A, E, T extends E>(
   request.pipe(
     Effect.timeout(RUNNING_SERVER_REQUEST_TIMEOUT),
     Effect.mapError((cause) =>
-      cause instanceof Error && !isTyped(cause as E)
-        ? new RunningServerRequestError({ operation, cause })
-        : isTyped(cause as E)
-          ? (cause as T)
-          : new RunningServerRequestError({ operation, cause }),
+      isTyped(cause as E) ? (cause as T) : new RunningServerRequestError({ operation, cause }),
     ),
   );
 

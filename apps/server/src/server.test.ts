@@ -14,6 +14,8 @@ import {
   type DpopFailureReason,
   EnvironmentId,
   EventId,
+  type FederationRemoteRunsSnapshot,
+  type FederationSnapshot,
   GitCommandError,
   KeybindingRule,
   MessageId,
@@ -25,6 +27,7 @@ import {
   type OrchestrationThreadActivity,
   type OrchestrationThreadShell,
   TerminalNotRunningError,
+  type TailcatRemoteAccessState,
   type OrchestrationCommand,
   type OrchestrationEvent,
   ORCHESTRATION_WS_METHODS,
@@ -69,6 +72,7 @@ import * as Ref from "effect/Ref";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
 import * as Tracer from "effect/Tracer";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -534,6 +538,8 @@ const buildAppUnderTest = (options?: {
     serverLifecycleEvents?: Partial<ServerLifecycleEvents.ServerLifecycleEvents["Service"]>;
     serverRuntimeStartup?: Partial<ServerRuntimeStartup.ServerRuntimeStartup["Service"]>;
     serverEnvironment?: Partial<ServerEnvironment.ServerEnvironment["Service"]>;
+    tailcatRemoteAccess?: Partial<TailcatRemoteAccess.TailcatRemoteAccess["Service"]>;
+    federation?: Partial<FederationService.FederationService["Service"]>;
     repositoryIdentityResolver?: Partial<
       RepositoryIdentityResolver.RepositoryIdentityResolver["Service"]
     >;
@@ -738,14 +744,16 @@ const buildAppUnderTest = (options?: {
       Layer.provide(Layer.succeed(HostProcessEnvironment, {})),
     );
 
-    // Tailcat and federation are exercised by their own tests; here they only
-    // need to exist so the auth token exchange and RPC layer can resolve them.
+    // Defaults support auth/bootstrap; subscription tests provide stateful services.
     const tailcatRemoteAccessLayer = Layer.mock(TailcatRemoteAccess.TailcatRemoteAccess)({
       readyEndpoint: Effect.succeed(Option.none()),
       recordTrustedPeer: () => Effect.void,
       start: () => Effect.void,
+      ...options?.layers?.tailcatRemoteAccess,
     });
-    const federationLayer = Layer.mock(FederationService.FederationService)({});
+    const federationLayer = Layer.mock(FederationService.FederationService)({
+      ...options?.layers?.federation,
+    });
     const servedRoutesLayer = HttpRouter.serve(
       makeRoutesLayer.pipe(Layer.provide(serviceLauncherClientLayer)),
       {
@@ -6051,6 +6059,114 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         );
         assert.deepEqual(calls, ["start", "cancel:old-operation", "cancel:install-operation"]);
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("streams Tailcat and federation snapshots once before subsequent updates", () =>
+    Effect.gen(function* () {
+      const updatedAt = "2026-01-01T00:00:00.000Z";
+      const nextUpdatedAt = "2026-01-01T00:00:01.000Z";
+      const tailcat = yield* SubscriptionRef.make<TailcatRemoteAccessState>({
+        enabled: false,
+        status: "disabled",
+        address: null,
+        remotePort: null,
+        pairingOpen: false,
+        trustedPeers: [],
+        runtime: null,
+        identityFingerprint: null,
+        lastError: null,
+        updatedAt,
+      });
+      const peers = yield* SubscriptionRef.make<FederationSnapshot>({
+        environmentId: EnvironmentId.make("environment-federation-test"),
+        publicKeyFingerprint: "test-fingerprint",
+        protocolVersion: 1,
+        peers: [],
+        updatedAt,
+      });
+      const runs = yield* SubscriptionRef.make<FederationRemoteRunsSnapshot>({
+        runs: [],
+        updatedAt,
+      });
+      const tailcatReplayed = yield* Deferred.make<void>();
+      const peersReplayed = yield* Deferred.make<void>();
+      const runsReplayed = yield* Deferred.make<void>();
+      yield* buildAppUnderTest({
+        layers: {
+          tailcatRemoteAccess: {
+            state: SubscriptionRef.get(tailcat),
+            changes: SubscriptionRef.changes(tailcat).pipe(
+              Stream.tap(() => Deferred.succeed(tailcatReplayed, undefined)),
+            ),
+          },
+          federation: {
+            snapshot: SubscriptionRef.get(peers),
+            changes: SubscriptionRef.changes(peers).pipe(
+              Stream.tap(() => Deferred.succeed(peersReplayed, undefined)),
+            ),
+            remoteRuns: SubscriptionRef.get(runs),
+            remoteRunChanges: SubscriptionRef.changes(runs).pipe(
+              Stream.tap(() => Deferred.succeed(runsReplayed, undefined)),
+            ),
+          },
+        },
+      });
+      const wsUrl = yield* getWsServerUrl("/ws");
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          Effect.gen(function* () {
+            const subscriptions = [
+              {
+                replayed: tailcatReplayed,
+                stream: client[WS_METHODS.tailcatSubscribeRemoteAccess]({}).pipe(
+                  Stream.map((state) => state.updatedAt),
+                  Stream.orDie,
+                ),
+                update: SubscriptionRef.update(tailcat, (state) => ({
+                  ...state,
+                  updatedAt: nextUpdatedAt,
+                })),
+              },
+              {
+                replayed: peersReplayed,
+                stream: client[WS_METHODS.federationSubscribePeers]({}).pipe(
+                  Stream.map((state) => state.updatedAt),
+                  Stream.orDie,
+                ),
+                update: SubscriptionRef.update(peers, (state) => ({
+                  ...state,
+                  updatedAt: nextUpdatedAt,
+                })),
+              },
+              {
+                replayed: runsReplayed,
+                stream: client[WS_METHODS.federationSubscribeRemoteRuns]({}).pipe(
+                  Stream.map((state) => state.updatedAt),
+                  Stream.orDie,
+                ),
+                update: SubscriptionRef.update(runs, (state) => ({
+                  ...state,
+                  updatedAt: nextUpdatedAt,
+                })),
+              },
+            ];
+            for (const { stream, update, replayed } of subscriptions) {
+              const firstReceived = yield* Deferred.make<void>();
+              const received = yield* stream.pipe(
+                Stream.tap(() => Deferred.succeed(firstReceived, undefined)),
+                Stream.take(2),
+                Stream.runCollect,
+                Effect.forkChild,
+              );
+              yield* Deferred.await(firstReceived);
+              yield* Deferred.await(replayed);
+              yield* update;
+              assert.deepEqual(yield* Fiber.join(received), [updatedAt, nextUpdatedAt]);
+            }
+          }),
+        ),
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("routes websocket rpc subscribeServerConfig streams snapshot then update", () =>

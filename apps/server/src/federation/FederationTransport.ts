@@ -178,22 +178,16 @@ export const make = Effect.gen(function* () {
                   : new FederationError({ code: "peer-unreachable", message: error.message }),
             ),
           );
+        const touchedAt = yield* nowMs;
         yield* Ref.update(forwards, (current) =>
           new Map(current).set(peerId, {
             scope,
             handle,
             address: transport.tailcat.address,
             port: transport.tailcat.port,
-            lastUsedAtMs: 0,
+            lastUsedAtMs: touchedAt,
           }),
         );
-        const touchedAt = yield* nowMs;
-        yield* Ref.update(forwards, (current) => {
-          const entry = current.get(peerId);
-          return entry === undefined
-            ? current
-            : new Map(current).set(peerId, { ...entry, lastUsedAtMs: touchedAt });
-        });
         yield* Effect.logInfo("Federation transport ready.", {
           peerId,
           localPort: handle.localPort,

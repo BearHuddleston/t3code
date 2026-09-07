@@ -2901,15 +2901,9 @@ const makeWsRpcLayer = (
           ),
         // Tailcat remote access: the Tailcat listener this environment exposes.
         [WS_METHODS.tailcatSubscribeRemoteAccess]: (_input) =>
-          observeRpcStream(
-            WS_METHODS.tailcatSubscribeRemoteAccess,
-            Stream.unwrap(
-              Effect.map(tailcatRemoteAccess.state, (latest) =>
-                Stream.concat(Stream.make(latest), tailcatRemoteAccess.changes),
-              ),
-            ),
-            { "rpc.aggregate": "tailcat" },
-          ),
+          observeRpcStream(WS_METHODS.tailcatSubscribeRemoteAccess, tailcatRemoteAccess.changes, {
+            "rpc.aggregate": "tailcat",
+          }),
         [WS_METHODS.tailcatSetRemoteAccessEnabled]: (input) =>
           observeRpcEffect(
             WS_METHODS.tailcatSetRemoteAccessEnabled,
@@ -2942,15 +2936,9 @@ const makeWsRpcLayer = (
           ),
         // Federation: peers this environment trusts and runs it delegated to them.
         [WS_METHODS.federationSubscribePeers]: (_input) =>
-          observeRpcStream(
-            WS_METHODS.federationSubscribePeers,
-            Stream.unwrap(
-              Effect.map(federation.snapshot, (latest) =>
-                Stream.concat(Stream.make(latest), federation.changes),
-              ),
-            ),
-            { "rpc.aggregate": "federation" },
-          ),
+          observeRpcStream(WS_METHODS.federationSubscribePeers, federation.changes, {
+            "rpc.aggregate": "federation",
+          }),
         [WS_METHODS.federationCreatePeerCode]: (input) =>
           observeRpcEffect(WS_METHODS.federationCreatePeerCode, federation.createPeerCode(input), {
             "rpc.aggregate": "federation",
@@ -2986,15 +2974,9 @@ const makeWsRpcLayer = (
             },
           ),
         [WS_METHODS.federationSubscribeRemoteRuns]: (_input) =>
-          observeRpcStream(
-            WS_METHODS.federationSubscribeRemoteRuns,
-            Stream.unwrap(
-              Effect.map(federation.remoteRuns, (latest) =>
-                Stream.concat(Stream.make(latest), federation.remoteRunChanges),
-              ),
-            ),
-            { "rpc.aggregate": "federation" },
-          ),
+          observeRpcStream(WS_METHODS.federationSubscribeRemoteRuns, federation.remoteRunChanges, {
+            "rpc.aggregate": "federation",
+          }),
         [WS_METHODS.federationDescribeRemoteArtifacts]: (input) =>
           observeRpcEffect(
             WS_METHODS.federationDescribeRemoteArtifacts,

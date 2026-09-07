@@ -317,9 +317,7 @@ export const make = Effect.gen(function* () {
         Math.max(0, earliestExpiry - currentMs) + Duration.toMillis(EXPIRY_GRACE),
       );
     }
-    const previous = yield* Ref.get(runtimeState);
     yield* Ref.update(runtimeState, (current) => ({ ...current, pairingOpen: open }));
-    return previous.pairingOpen !== open;
   });
 
   const ensureIdentity = Effect.gen(function* () {
